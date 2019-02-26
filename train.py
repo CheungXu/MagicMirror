@@ -20,5 +20,4 @@ if __name__ == '__main__':
     with tf.Session(config=sess_config) as sess:
         print('----------------------------Start Train ...----------------------------------')
         model.train(sess, train_cooker, epoch_num=1000)
-#Push Testing
 
