@@ -21,4 +21,4 @@ if __name__ == '__main__':
         print('----------------------------Start Train ...----------------------------------')
         model.train(sess, train_cooker, epoch_num=1000)
 
-#First Edition
+
