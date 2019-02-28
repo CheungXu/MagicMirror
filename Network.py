@@ -1,11 +1,13 @@
 import tensorflow as tf
 import numpy as numpy
-import DataCooker as DC
+import DataCooker2 as DC
 import os,time
 
+#批归一化
 def batch_normal(input_ , scope="scope" , reuse=False):
     return tf.contrib.layers.batch_norm(input_ , epsilon=1e-5, decay=0.9 , scale=True, scope=scope , reuse=reuse , updates_collections=None)
 
+#上采样
 def upscale2d(x, factor=2):
     assert isinstance(factor, int) and factor >= 1
     if factor == 1: return x
@@ -15,21 +17,27 @@ def upscale2d(x, factor=2):
     x = tf.reshape(x, [-1, s[1] * factor, s[2] * factor,s[3]])
     return x
 
+#2维卷积层
 def conv2d(input_, kernel_num, kernel_size=3, stride=1,pad='same', conv_name='conv2d'):
     return tf.layers.conv2d(input_,filters=kernel_num,kernel_size=[kernel_size, kernel_size],strides=stride, padding=pad,activation=tf.nn.relu,name=conv_name)
 
+#2维反卷积层
 def deconv2d(input_, kernel_num, kernel_size=3, stride=1,pad='same', conv_name='deconv2d'):
     return tf.layers.conv2d(upscale2d(input_),filters=kernel_num,kernel_size=[kernel_size, kernel_size],strides=stride, padding=pad,activation=tf.nn.relu,name=conv_name)
 
+#最大池化
 def max_pool2d(input_, kernel_size=3, pool_name='pool2d'):
     return tf.layers.max_pooling2d(input_, kernel_size, strides=2 ,padding='same',data_format='channels_last',name=pool_name)
 
+#交叉熵
 def sigmoid_cross_entropy_with_logits(x, y):
     #try:
     return tf.nn.sigmoid_cross_entropy_with_logits(logits=x, labels=y)
     #except:
      #   return tf.nn.sigmoid_cross_entropy_with_logits(logits=x, targets=y)
 
+#参差自编码网（完成中...）
+"""
 class resVae(object):
     def __init__(self,batch_size,image_height,image_width):
         self.image_height = image_height
@@ -51,8 +59,9 @@ class resVae(object):
                 h3 = batch_normal(conv2d(h2, 16, 3, 2, conv_name='resVae_conv_3'), scope='resVae_bn_3') #128->64
                 h4 = batch_normal(conv2d(h3, 16, 3, 2, conv_name='resVae_conv_3'), scope='resVae_bn_3') #64->32
                 h5 = batch_normal(deconv2d(h4, 16, 3, 2, conv_name='resVae_conv_3'), scope='resVae_bn_3') #32->64
-
-
+"""
+#参差网（已完成，待更新...）
+"""
 class ResNet(object):
     def __init__(self,batch_size,image_height,image_width):
         self.image_height = image_height
@@ -116,19 +125,20 @@ class ResNet(object):
                 checkpoint_path = os.path.join('.\\model\\Vgg', 'vgg_%d' % (epoch))
                 self.saver.save(sess, checkpoint_path, global_step=epoch)
                 print('Save checkpoint in : %s' % (checkpoint_path))   
+"""
 
-
-
+#VGG网络（已完成）
 class Vgg(object):
-    def __init__(self,batch_size,image_height,image_width):
+    def __init__(self, batch_size, image_height, image_width):
         self.image_height = image_height
         self.image_width = image_width
         self.batch_size = batch_size
         self.learning_rate = 0.05
-        self.input = tf.placeholder(tf.float32, [self.batch_size, self.image_height, self.image_width, 3] , name='input_images')
-        self.label = tf.placeholder(tf.float32, [self.batch_size,1], name='input_labels')
+        #self.input = tf.placeholder(tf.float32, [self.batch_size, self.image_height, self.image_width, 3] , name='input_images')
+        #self.label = tf.placeholder(tf.float32, [self.batch_size,1], name='input_labels')
 
-    def build_network(self,reuse=False):
+    def build_network(self, datacooker, reuse=False):
+        self.input, self.label = datacooker.get_batch_data(batch_size = self.batch_size)
         with tf.device('/gpu:0'):
             with tf.variable_scope('Vgg') as scope:
                 if reuse:
@@ -153,7 +163,7 @@ class Vgg(object):
                 self.output = tf.nn.tanh(h16)
         return self.output
 
-    def train(self, sess, datacooker,epoch_num=1):
+    def train(self):
         global_step = tf.Variable(0, trainable=False)
         add_global = global_step.assign_add(1)
         new_learning_rate = tf.train.exponential_decay(self.learning_rate, global_step=global_step, decay_steps=1000,decay_rate=0.98)
@@ -168,37 +178,37 @@ class Vgg(object):
         #self.trainer = tf.train.RMSPropOptimizer(learning_rate = self.learning_rate)
         self.trainer = tf.train.AdamOptimizer(learning_rate = new_learning_rate)
         self.gradients = self.trainer.compute_gradients(self.loss, var_list=self.vars)
-        self.optionor = self.trainer.apply_gradients(self.gradients)
+        self.training_op = self.trainer.apply_gradients(self.gradients)
 
-        tf.global_variables_initializer().run()
         self.all_sum = tf.summary.merge([self.image_sum, self.loss_sum])
-        self.writer = tf.summary.FileWriter(".\\logs", sess.graph)
 
         self.saver = tf.train.Saver(max_to_keep=0)
-
-        index_num = len(datacooker)
-        start_time = time.time()
-        for epoch in range(epoch_num):
-            for idx in range(index_num):
-                images, labels = datacooker.get_batch(idx)
+        batch_num = 0
+        
+        sess_config = tf.ConfigProto()
+        sess_config.gpu_options.allow_growth=True
+        with tf.train.MonitoredTrainingSession(config=sess_config) as sess:
+            #tf.global_variables_initializer().run()
+            if not os.path.exists(os.path.join('.','log')):
+                os.makedirs(os.path.join('.','log'))
+            self.writer = tf.summary.FileWriter(os.path.join('.','log'), sess.graph)
+            sess.graph.finalize()
+            while not sess.should_stop():
+                batch_num += 1
                 with tf.device('/gpu:0'):
-                    _, summary_str = sess.run([self.optionor, self.all_sum], feed_dict={self.input : images, self.label : labels})
-                self.writer.add_summary(summary_str,epoch*index_num+idx)
-                learning_rate = sess.run(new_learning_rate)
-                if learning_rate > 0.001:
-                    sess.run(add_global)
-                if (epoch*index_num+idx) % 10 == 0:   
-                    loss = 0.0
-                    loss = sess.run(self.loss, feed_dict= {self.input : images, self.label : labels})
-                    end_time = time.time()
-                    print('Epoch: %d/%d Batch: %d/%d Loss: %.7f Time: %.2fs LR: %.7f' % (epoch, epoch_num, idx, index_num, loss, (end_time-start_time), learning_rate))
-                    start_time = end_time
-            if epoch % 10 == 0:
-                if not os.path.exists('.\\model\\Vgg'):
-                    os.makedirs('.\\model\\Vgg')
-                checkpoint_path = os.path.join('.\\model\\Vgg', 'vgg_%d' % (epoch))
-                self.saver.save(sess, checkpoint_path, global_step=epoch)
-                print('Save checkpoint in : %s' % (checkpoint_path))
+                    _, summary_str, loss = sess.run([self.training_op, self.all_sum, self.loss])
+                    self.writer.add_summary(summary_str,batch_num)
+                    learning_rate = sess.run(new_learning_rate)
+                    if learning_rate > 0.001:
+                        sess.run(add_global)
+                if batch_num % 100 == 0:
+                    print('Batch %d Loss: %.7f LR:%.7f' % (batch_num, loss, learning_rate))
+                if batch_num % 10000 == 0:
+                    if not os.path.exists(os.path.join('.','model','Vgg')):
+                        os.makedirs(os.path.join('.','model','Vgg'))
+                    checkpoint_path = os.path.join('.','model','Vgg', 'vgg_%d' % (batch_num))
+                    self.saver.save(sess, checkpoint_path, global_step=batch_num)
+                    print('Save checkpoint in : %s' % (checkpoint_path))
 
 if __name__=='__main__':
     net = Vgg(16,256,256)
