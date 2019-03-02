@@ -45,7 +45,9 @@ class DataCooker(object):
         self.dataset = self.dataset.map(__read_image_dataset)
         #设置epoch
         if self.epoch > 1:
-            self.dataset = self.dataset.repeat(self.epoch - 1)
+            self.dataset = self.dataset.repeat(self.epoch)
+        elif self.epoch == -1:
+            self.dataset = self.dataset.repeat()
             
     def get_batch_data(self, batch_size = 1):
         self.batch_size = batch_size
@@ -69,9 +71,11 @@ class DataCooker(object):
 if __name__ == '__main__':
     dc = DataCooker(os.path.join('/','data','Images'), os.path.join('/','data','labels.txt'))
     #print(dc.labels[0])
-    img_iter, label_iter = dc.get_batch_data(batch_size = 2)
+    img_iter, label_iter = dc.get_batch_data(batch_size = 16)
     print(img_iter.shape)
     print(label_iter.shape)
-    #with tf.Session() as sess:
-    #    res = sess.run(img_iter)
-    #cv2.imwrite('/data/1.jpg',cv2.cvtColor(res[0][0], cv2.COLOR_RGB2BGR))
+
+    with tf.Session() as sess:
+        res = sess.run(label_iter)
+    for label in res:
+        print(label*1000)
