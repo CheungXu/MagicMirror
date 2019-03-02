@@ -4,8 +4,8 @@ import DataCooker2 as DC
 import os,time
 
 #批归一化
-def batch_normal(input_ , scope="scope" , reuse=False):
-    return tf.contrib.layers.batch_norm(input_ , epsilon=1e-5, decay=0.9 , scale=True, scope=scope , reuse=reuse , updates_collections=None)
+def batch_normal(input_ , scope="scope" , reuse=False, is_train = True):
+    return tf.contrib.layers.batch_norm(input_ , epsilon=1e-5, decay=0.9 , scale=True, scope=scope , reuse=reuse , updates_collections=None, is_training = is_train)
 
 #上采样
 def upscale2d(x, factor=2):
@@ -129,17 +129,26 @@ class ResNet(object):
 
 #VGG网络（已完成）
 class Vgg(object):
-    def __init__(self, batch_size, image_height, image_width):
+    def __init__(self, batch_size, image_height, image_width, datacooker=None, is_train=True):
         self.image_height = image_height
         self.image_width = image_width
         self.batch_size = batch_size
         self.learning_rate = 0.05
-        #self.input = tf.placeholder(tf.float32, [self.batch_size, self.image_height, self.image_width, 3] , name='input_images')
-        #self.label = tf.placeholder(tf.float32, [self.batch_size,1], name='input_labels')
+        self.is_train = is_train
+        self.input = None
+        self.label = None
+        if self.is_train:
+            self.input, self.label = datacooker.get_batch_data(batch_size = self.batch_size)
+        else:
+            self.input = tf.placeholder(tf.float32, [1, self.image_height, self.image_width, 3] , name='input_images')
 
-    def build_network(self, datacooker, reuse=False):
-        self.input, self.label = datacooker.get_batch_data(batch_size = self.batch_size)
-        with tf.device('/gpu:0'):
+    def build_network(self, reuse=False, use_gpu=True):
+        device_info = ''
+        if use_gpu:
+            device_info = '/gpu:0'
+        else:
+            device_info = '/cpu:0'
+        with tf.device(device_info):
             with tf.variable_scope('Vgg') as scope:
                 if reuse:
                     scope.reuse_variables() 
@@ -164,51 +173,83 @@ class Vgg(object):
         return self.output
 
     def train(self):
-        global_step = tf.Variable(0, trainable=False)
-        add_global = global_step.assign_add(1)
-        new_learning_rate = tf.train.exponential_decay(self.learning_rate, global_step=global_step, decay_steps=1000,decay_rate=0.98)
-
+        #构建损失函数
         #self.loss = tf.reduce_sum(tf.square(self.label - self.output))
         self.loss = tf.reduce_sum(sigmoid_cross_entropy_with_logits(self.output, self.label))
-
+        
+        #获取所有训练参数
+        self.train_vars = tf.trainable_variables()
+        
+        #设置Tensorboard记录
         self.image_sum = tf.summary.image('image',self.input)
         self.loss_sum = tf.summary.scalar('loss',self.loss)
-        self.vars = tf.trainable_variables()
-
-        #self.trainer = tf.train.RMSPropOptimizer(learning_rate = self.learning_rate)
-        self.trainer = tf.train.AdamOptimizer(learning_rate = new_learning_rate)
-        self.gradients = self.trainer.compute_gradients(self.loss, var_list=self.vars)
-        self.training_op = self.trainer.apply_gradients(self.gradients)
-
         self.all_sum = tf.summary.merge([self.image_sum, self.loss_sum])
-
-        self.saver = tf.train.Saver(max_to_keep=0)
-        batch_num = 0
         
+        #训练轮数
+        self.global_step = tf.train.get_or_create_global_step()
+        
+        #学习率衰减
+        #global_step = tf.Variable(0, trainable=False)
+        #add_global = global_step.assign_add(1)
+        new_learning_rate = tf.train.exponential_decay(self.learning_rate, global_step = self.global_step, decay_steps=1000,decay_rate = 0.98)
+
+        #设置依赖BN参数的优化器
+        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        with tf.control_dependencies(update_ops):
+            self.trainer = tf.train.AdamOptimizer(learning_rate = new_learning_rate)
+            #self.trainer = tf.train.RMSPropOptimizer(learning_rate = self.learning_rate)  
+        self.gradients = self.trainer.compute_gradients(self.loss, var_list=self.train_vars)
+        self.training_op = self.trainer.apply_gradients(self.gradients, global_step = self.global_step)
+
+        #模型保存器
+        self.all_vars = tf.global_variables()
+        bn_moving_vars = [g for g in self.all_vars if 'moving_mean' in g.name]
+        bn_moving_vars += [g for g in self.all_vars if 'moving_variance' in g.name]
+        self.save_list = self.train_vars + bn_moving_vars
+        self.saver = tf.train.Saver(var_list = self.save_list, max_to_keep=5)
+        
+        #设置会话配置
         sess_config = tf.ConfigProto()
         sess_config.gpu_options.allow_growth=True
-        with tf.train.MonitoredTrainingSession(config=sess_config) as sess:
+        
+        #模型保存挂件,定轮保存模型
+        model_save_path = os.path.join('.','model','Vgg')
+        if not os.path.exists(model_save_path):
+            os.makedirs(model_save_path)
+        checkpoint_hook = tf.train.CheckpointSaverHook(checkpoint_dir = model_save_path, save_steps = 100, saver = self.saver)
+        
+        #日志记录挂件，记录日志
+        summary_path = os.path.join('.','log')
+        if not os.path.exists(summary_path):
+            os.makedirs(summary_path)
+        summary_hook = tf.train.SummarySaverHook(save_steps = 1, output_dir = summary_path, summary_op = self.all_sum)
+
+        loss_sum = 0.0
+        loss_sum_num = 1
+        print_num = 50
+        
+        #启动会话，开始训练
+        with tf.train.MonitoredTrainingSession(hooks = [checkpoint_hook, summary_hook], config = sess_config) as sess:
             #tf.global_variables_initializer().run()
-            if not os.path.exists(os.path.join('.','log')):
-                os.makedirs(os.path.join('.','log'))
-            self.writer = tf.summary.FileWriter(os.path.join('.','log'), sess.graph)
+            #初始化Tensorboard日志路径，写入计算图图信息
+            #self.writer = tf.summary.FileWriter(os.path.join('.','log'), sess.graph)
+            #冻结计算图
             sess.graph.finalize()
+            #开始训练
             while not sess.should_stop():
-                batch_num += 1
+                #更新参数,记录loss
                 with tf.device('/gpu:0'):
-                    _, summary_str, loss = sess.run([self.training_op, self.all_sum, self.loss])
-                    self.writer.add_summary(summary_str,batch_num)
+                    _, summary_str, loss, global_step = sess.run([self.training_op, self.all_sum, self.loss, self.global_step])
+                    loss_sum += loss
+                #输出信息
+                if global_step % print_num == 0:
                     learning_rate = sess.run(new_learning_rate)
-                    if learning_rate > 0.001:
-                        sess.run(add_global)
-                if batch_num % 100 == 0:
-                    print('Batch %d Loss: %.7f LR:%.7f' % (batch_num, loss, learning_rate))
-                if batch_num % 10000 == 0:
-                    if not os.path.exists(os.path.join('.','model','Vgg')):
-                        os.makedirs(os.path.join('.','model','Vgg'))
-                    checkpoint_path = os.path.join('.','model','Vgg', 'vgg_%d' % (batch_num))
-                    self.saver.save(sess, checkpoint_path, global_step=batch_num)
-                    print('Save checkpoint in : %s' % (checkpoint_path))
+                    print('Batch %d Loss: %.7f LR:%.7f' % (global_step, loss_sum/loss_sum_num, learning_rate))
+                    loss_sum = 0
+                    loss_sum_num = 0
+                else:
+                    loss_sum_num += 1
+                                    
 
 if __name__=='__main__':
     net = Vgg(16,256,256)

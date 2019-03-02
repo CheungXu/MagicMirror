@@ -11,8 +11,8 @@ if __name__ == '__main__':
     dc = DataCooker(os.path.join('/','data','Images'), os.path.join('/','data','labels.txt'), epoch = 20)
     print('------------------------Prepareing Data Completed----------------------------')
     print('------------------------Constructing Network...------------------------------')
-    model = Vgg(16,256,256)
-    net = model.build_network(dc)
+    model = Vgg(16,256,256,dc)
+    _ = model.build_network()
     print('------------------------Network Done !---------------------------------------')
 
     print('----------------------------Start Train ...----------------------------------')

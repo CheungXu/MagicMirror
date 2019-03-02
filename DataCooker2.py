@@ -45,7 +45,7 @@ class DataCooker(object):
         self.dataset = self.dataset.map(__read_image_dataset)
         #设置epoch
         if self.epoch > 1:
-            dataset.repeat(self.epoch - 1)
+            self.dataset = self.dataset.repeat(self.epoch - 1)
             
     def get_batch_data(self, batch_size = 1):
         self.batch_size = batch_size
